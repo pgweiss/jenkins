@@ -24,6 +24,7 @@
 package hudson;
 
 import hudson.model.TaskListener;
+import hudson.remoting.Channel;
 import hudson.util.IOException2;
 import hudson.util.StreamCopyThread;
 import hudson.util.ProcessTree;
@@ -190,20 +191,26 @@ public abstract class Proc {
             this.cookie = EnvVars.createCookie();
             procBuilder.environment().putAll(cookie);
             this.proc = procBuilder.start();
-            copier = new StreamCopyThread(name+": stdout copier", proc.getInputStream(), out);
+            InputStream procInputStream = proc.getInputStream();
+            copier = new StreamCopyThread(name+": stdout copier", procInputStream, out);
             copier.start();
             if(in!=null)
                 new StdinCopyThread(name+": stdin copier",in,proc.getOutputStream()).start();
             else
                 proc.getOutputStream().close();
+            InputStream procErrorStream = proc.getErrorStream();
             if(err!=null) {
-                copier2 = new StreamCopyThread(name+": stderr copier", proc.getErrorStream(), err);
+                copier2 = new StreamCopyThread(name+": stderr copier", procErrorStream, err);
                 copier2.start();
             } else {
-                // while this is not discussed in javadoc, even with ProcessBuilder.redirectErrorStream(true),
-                // Process.getErrorStream() still returns a distinct reader end of a pipe that needs to be closed.
-                // this is according to the source code of JVM
-                proc.getErrorStream().close();
+                // the javadoc is unclear about what getErrorStream() returns when ProcessBuilder.redirectErrorStream(true),
+                //
+                // according to the source code, Sun JREs still still returns a distinct reader end of a pipe that needs to be closed.
+                // but apparently at least on some IBM JDK5, returned input and error streams are the same.
+                // so try to close them smartly
+                if (procErrorStream!=procInputStream) {
+                    procErrorStream.close();
+                }
                 copier2 = null;
             }
         }
@@ -331,7 +338,7 @@ public abstract class Proc {
     }
 
     /**
-     * Retemoly launched process via {@link Channel}.
+     * Remotely launched process via {@link Channel}.
      */
     public static final class RemoteProc extends Proc {
         private final Future<Integer> process;
