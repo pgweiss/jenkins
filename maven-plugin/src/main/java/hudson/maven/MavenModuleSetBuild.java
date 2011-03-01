@@ -147,6 +147,20 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
         String opts = project.getMavenOpts();
         if(opts!=null)
             envs.put("MAVEN_OPTS", opts);
+        // We need to add M2_HOME and the mvn binary to the PATH so if Maven
+        // needs to run Maven it will pick the correct one.
+        // This can happen if maven calls ANT which itself calls Maven
+        // or if Maven calls itself e.g. maven-release-plugin
+        MavenInstallation mvn = project.getMaven();
+        if (mvn == null)
+            throw new AbortException(
+                    "A Maven installation needs to be available for this project to be built.\n"
+                    + "Either your server has no Maven installations defined, or the requested Maven version does not exist.");
+
+        mvn = mvn.forEnvironment(envs).forNode(
+                Computer.currentComputer().getNode(), log);
+        envs.put("M2_HOME", mvn.getHome());
+        envs.put("PATH+MAVEN", mvn.getHome() + "/bin");
         return envs;
     }
 
@@ -206,7 +220,7 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
 
             private boolean belongsToSubsidiary(List<MavenModule> subsidiaries, String path) {
                 for (MavenModule sub : subsidiaries)
-                    if (FilenameUtils.separatorsToUnix(path).startsWith(FilenameUtils.normalize(sub.getRelativePath())))
+                    if (FilenameUtils.separatorsToUnix(path).startsWith(normalizePath(sub.getRelativePath())))
                         return true;
                 return false;
             }
@@ -216,7 +230,7 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
              */
             private boolean isDescendantOf(ChangeLogSet.Entry e, MavenModule mod) {
                 for (String path : e.getAffectedPaths()) {
-                    if (FilenameUtils.separatorsToUnix(path).startsWith(FilenameUtils.normalize(mod.getRelativePath())))
+                    if (FilenameUtils.separatorsToUnix(path).startsWith(normalizePath(mod.getRelativePath())))
                         return true;
                 }
                 return false;
@@ -281,7 +295,7 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
         
         return result != 0 ? result : -1;
     }
-    
+
     /**
      * Estimates the duration overhead the {@link MavenModuleSetBuild} itself adds
      * to the sum of duration of the module builds.
@@ -307,6 +321,18 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
         }
         
         return Math.round((double)overhead / moduleSetBuilds.size());
+    }
+
+    private static String normalizePath(String relPath) {
+        // JENKINS-8525 FilenameUtils.normalize for ../foo returns null
+        if (StringUtils.isEmpty(relPath) || StringUtils.startsWith( relPath, "../" )) {
+            LOGGER.config("No need to normalize " + (StringUtils.isEmpty(relPath) ? "an empty path" : relPath));
+        } else {
+            String tmp = FilenameUtils.normalize( relPath );
+            LOGGER.config("Normalized path " + relPath + " to "+tmp);
+            relPath = tmp;
+        }
+        return relPath;
     }
 
     /**
@@ -492,7 +518,7 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
                                              "Either your server has no Maven installations defined, or the requested Maven version does not exist.");
                 
                 mvn = mvn.forEnvironment(envVars).forNode(Computer.currentComputer().getNode(), listener);
-
+                
                 MavenInformation mavenInformation = getModuleRoot().act( new MavenVersionCallable( mvn.getHome() ));
                 
                 String mavenVersion = mavenInformation.getVersion();
@@ -1209,9 +1235,8 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
         private void toPomInfo(MavenProject mp, PomInfo parent, Map<String,MavenProject> abslPath, Set<PomInfo> infos) throws IOException {
             
             String relPath = PathTool.getRelativeFilePath( this.moduleRootPath, mp.getBasedir().getPath() );
-                //PathTool.getRelativeFilePath( this.workspaceProper, mp.getBasedir().getPath() );
-            relPath = FilenameUtils.normalize( relPath );
-            
+            relPath = normalizePath(relPath);
+
             if (parent == null ) {
                 relPath = getRootPath(rootPOMRelPrefix);
             }

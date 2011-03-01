@@ -58,6 +58,35 @@ Upcoming changes</a>
 <!-- Record your changes in the trunk here. -->
 <div id="trunk" style="display:none"><!--=TRUNK-BEGIN=-->
 <ul class=image>
+  <li class=>
+</ul>
+</div><!--=TRUNK-END=-->
+
+<!-- these changes are controlled by the release process. DO NOT MODIFY -->
+<div id="rc" style="display:none;"><!--=BEGIN=-->
+<h3><a name=v1.400>What's new in 1.400</a> <!--=DATE=--></h3>
+<ul class=image>
+  <li class=bug>
+    NPE during in parsing POMs for Multi Module Build
+    (<a href="http://issues.jenkins-ci.org/browse/JENKINS-8525">issue 8525</a>)
+  <li class=bug>
+    Post build action deploy to maven repository can fail when using "use private maven repository option"
+    (<a href="http://issues.jenkins-ci.org/browse/JENKINS-8711">issue 8711</a>)    
+  <li class=bug>
+    Groovy CLI command was failing to resolve plugin classes
+    (<a href="http://issues.jenkins-ci.org/browse/JENKINS-8892">issue 8892</a>)    
+  <li class=rfe>
+    Exposing more key variables to the Groovy CLI command.
+  <li class=rfe>
+    Allow classworlds.conf to be externally configured for M3 builds
+    (<a href="http://issues.jenkins-ci.org/browse/JENKINS-8905">issue 8905</a>)    
+  <li class=bug>
+    Configure the environment for Maven job type builds
+    (<a href="http://issues.jenkins-ci.org/browse/JENKINS-8092">issue 8902</a>)
+</ul>
+</div><!--=END=-->
+<h3><a name=v1.399>What's new in 1.399</a> (2011/02/27)</h3>
+<ul class=image>
   <li class='major bug'>
     On IBM JDKs, Jenkins incorrectly ended up closing stdout to read from forked processes.
     (<a href="http://issues.jenkins-ci.org/browse/JENKINS-8420">issue 8420</a>)
@@ -76,17 +105,27 @@ Upcoming changes</a>
   <li class=bug>
     Fix javascript errors on config pages when view name or user name contains an apostrophe.
     (<a href="http://issues.jenkins-ci.org/browse/JENKINS-8789">issue 8789</a>)
+  <li class=bug>
+    Fix expansion of builtin environment variables in Ant properties on Windows.
+    (<a href="http://issues.jenkins-ci.org/browse/JENKINS-7442">issue 7442</a>)
+  <li class=bug>
+    Fixed a log rotation configuration problem on openSUSE.
+    (<a href="http://issues.jenkins-ci.org/browse/JENKINS-5784">issue 5784</a>)
+  <li class=bug>
+    Fixed a bug in the OpenSUSE startup script (again)
+    (<a href="http://issues.jenkins-ci.org/browse/JENKINS-5020">issue 5020</a>)
+  <li class=rfe>
+    Change prefix of BUILD_TAG variable to "jenkins-"
   <li class=rfe>
     Lock down maven plugin versions to shut up m3
     (<a href="http://issues.jenkins-ci.org/browse/JENKINS-7275">issue 7275</a>)
   <li class=rfe>
     <tt>BuildWrapper</tt>s can now act on the build in progress before the checkout occurs.
+  <li class=rfe>
+    Improved the process forking abstractions so that plugins can more easily read from child processes.
+    (<a href="http://issues.jenkins-ci.org/browse/JENKINS-7809">issue 7809</a>)
 </ul>
-</div><!--=TRUNK-END=-->
-
-<!-- these changes are controlled by the release process. DO NOT MODIFY -->
-<div id="rc" style="display:none;"><!--=BEGIN=-->
-<h3><a name=v1.398>What's new in 1.398</a> <!--=DATE=--></h3>
+<h3><a name=v1.398>What's new in 1.398</a> (2011/02/20)</h3>
 <ul class=image>
   <li class=bug>
     MavenBuild does not respect the "alternate settings" value of its parent MavenModuleSetBuild
@@ -111,7 +150,6 @@ Upcoming changes</a>
   <li class=rfe>
     Started exposing JENKINS_URL, JENKINS_SERVER_COOKIE env vars in addition to legacy HUDSON_* variables
 </ul>
-</div><!--=END=-->
 <h3><a name=v1.397>What's new in 1.397</a> (2011/02/12)</h3>
 <ul class=image>
   <li class='major bug'>
@@ -144,6 +182,8 @@ Upcoming changes</a>
   <li class=bug>
     EXECUTOR_NUMBER uniqueness can degrate over time
     (<a href="http://issues.jenkins-ci.org/browse/JENKINS-4756">issue 4756</a>)
+  <li class=bug>
+    <tt>jenkins-cli.jar</tt> should honor <tt>JENKINS_URL</tt>.
   <li class=rfe>
     build RSS feeds now contain description of builds.
     (<a href="http://issues.jenkins-ci.org/browse/JENKINS-3935">issue 3935</a>)
