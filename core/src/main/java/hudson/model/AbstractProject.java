@@ -70,6 +70,8 @@ import hudson.tasks.Publisher;
 import hudson.triggers.SCMTrigger;
 import hudson.triggers.Trigger;
 import hudson.triggers.TriggerDescriptor;
+import hudson.util.AlternativeUiTextProvider;
+import hudson.util.AlternativeUiTextProvider.Message;
 import hudson.util.DescribableList;
 import hudson.util.EditDistance;
 import hudson.util.FormValidation;
@@ -98,6 +100,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -351,6 +354,15 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
     @Override
     public String getPronoun() {
         return Messages.AbstractProject_Pronoun();
+    }
+
+    /**
+     * Gets the human readable display name to be rendered in the "Build Now" link.
+     *
+     * @since 1.401
+     */
+    public String getBuildNowText() {
+        return AlternativeUiTextProvider.get(BUILD_NOW_TEXT,this,Messages.AbstractProject_BuildNow());
     }
 
     /**
@@ -1062,36 +1074,34 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
     }
 
     /**
-     * Returns the project if any of the downstream project (or itself) is either
-     * building or is in the queue.
+     * Returns the project if any of the downstream project is either
+     * building, waiting, pending or buildable.
      * <p>
      * This means eventually there will be an automatic triggering of
      * the given project (provided that all builds went smoothly.)
      */
     protected AbstractProject getBuildingDownstream() {
-    	DependencyGraph graph = Hudson.getInstance().getDependencyGraph();
-        Set<AbstractProject> tups = graph.getTransitiveDownstream(this);
-        tups.add(this);
-        for (AbstractProject tup : tups) {
-            if(tup!=this && (tup.isBuilding() || tup.isInQueue()))
+        Set<Task> unblockedTasks = Hudson.getInstance().getQueue().getUnblockedTasks();
+
+        for (AbstractProject tup : Hudson.getInstance().getDependencyGraph().getTransitiveDownstream(this)) {
+			if (tup!=this && (tup.isBuilding() || unblockedTasks.contains(tup)))
                 return tup;
         }
         return null;
     }
 
     /**
-     * Returns the project if any of the upstream project (or itself) is either
+     * Returns the project if any of the upstream project is either
      * building or is in the queue.
      * <p>
      * This means eventually there will be an automatic triggering of
      * the given project (provided that all builds went smoothly.)
      */
     protected AbstractProject getBuildingUpstream() {
-    	DependencyGraph graph = Hudson.getInstance().getDependencyGraph();
-        Set<AbstractProject> tups = graph.getTransitiveUpstream(this);
-        tups.add(this);
-        for (AbstractProject tup : tups) {
-            if(tup!=this && (tup.isBuilding() || tup.isInQueue()))
+        Set<Task> unblockedTasks = Hudson.getInstance().getQueue().getUnblockedTasks();
+
+        for (AbstractProject tup : Hudson.getInstance().getDependencyGraph().getTransitiveUpstream(this)) {
+			if (tup!=this && (tup.isBuilding() || unblockedTasks.contains(tup)))
                 return tup;
         }
         return null;
@@ -1909,6 +1919,8 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
      * Permission to abort a build. For now, let's make it the same as {@link #BUILD}
      */
     public static final Permission ABORT = BUILD;
+
+    public static final Message<AbstractProject> BUILD_NOW_TEXT = new Message<AbstractProject>();
 
     /**
      * Used for CLI binding.

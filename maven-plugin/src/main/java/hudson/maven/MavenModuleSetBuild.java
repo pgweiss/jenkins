@@ -54,6 +54,7 @@ import hudson.model.TaskListener;
 import hudson.remoting.Channel;
 import hudson.remoting.VirtualChannel;
 import hudson.scm.ChangeLogSet;
+import hudson.slaves.NodeProperty;
 import hudson.tasks.BuildWrapper;
 import hudson.tasks.MailSender;
 import hudson.tasks.Maven.MavenInstallation;
@@ -125,12 +126,20 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
 
     private String mavenVersionUsed;
 
+    private transient Object notifyModuleBuildLock = new Object();
+
     public MavenModuleSetBuild(MavenModuleSet job) throws IOException {
         super(job);
     }
 
     public MavenModuleSetBuild(MavenModuleSet project, File buildDir) throws IOException {
         super(project, buildDir);
+    }
+
+    @Override
+    protected void onLoad() {
+        super.onLoad();
+        notifyModuleBuildLock = new Object();
     }
 
     /**
@@ -456,7 +465,9 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
 
             // actions need to be replaced atomically especially
             // given that two builds might complete simultaneously.
-            synchronized(this) {
+            // use a separate lock object since this synchronized block calls into plugins,
+            // which in turn can access other MavenModuleSetBuild instances, which will result in a dead lock.
+            synchronized(notifyModuleBuildLock) {
                 boolean modified = false;
 
                 List<Action> actions = getActions();
@@ -725,7 +736,7 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
 
             List<PomInfo> poms;
             try {
-                poms = getModuleRoot().act(new PomParser(listener, mvn, project, mavenVersion));
+                poms = getModuleRoot().act(new PomParser(listener, mvn, project, mavenVersion, envVars));
             } catch (IOException e) {
                 if (e.getCause() instanceof AbortException)
                     throw (AbortException) e.getCause();
@@ -1046,7 +1057,7 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
         
         String rootPOMRelPrefix;
         
-        public PomParser(BuildListener listener, MavenInstallation mavenHome, MavenModuleSet project,String mavenVersion) {
+        public PomParser(BuildListener listener, MavenInstallation mavenHome, MavenModuleSet project,String mavenVersion,EnvVars envVars) {
             // project cannot be shipped to the remote JVM, so all the relevant properties need to be captured now.
             this.listener = listener;
             this.mavenHome = mavenHome;
@@ -1062,6 +1073,14 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
                     }
                 }
             }
+            if (envVars != null && !envVars.isEmpty()) {
+                for (Entry<String,String> entry : envVars.entrySet()) {
+                    if (entry.getKey() != null && entry.getValue() != null) {
+                        this.properties.put( "env." + entry.getKey(), entry.getValue() );
+                    }
+                }
+            }
+            
             this.nonRecursive = project.isNonRecursive();
             this.workspaceProper = project.getLastBuild().getWorkspace().getRemote();
             if (project.usesPrivateRepository()) {
@@ -1069,6 +1088,8 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
             } else {
                 this.privateRepository = null;
             }
+            // TODO maybe in goals with -s,--settings
+            // or -Dmaven.repo.local
             this.alternateSettings = project.getAlternateSettings();
             this.mavenVersion = mavenVersion;
             this.resolveDependencies = project.isResolveDependencies();
@@ -1309,7 +1330,7 @@ public class MavenModuleSetBuild extends AbstractMavenBuild<MavenModuleSet,Maven
      * Extra verbose debug switch.
      */
     public static boolean debug = Boolean.getBoolean( "hudson.maven.debug" );
-    
+
     @Override
     public MavenModuleSet getParent() {// don't know why, but javac wants this
         return super.getParent();

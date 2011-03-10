@@ -24,26 +24,37 @@
 package hudson.maven;
 
 import hudson.Extension;
+import hudson.FilePath;
 import hudson.Launcher;
 import hudson.Util;
 import hudson.maven.reporters.MavenAbstractArtifactRecord;
 import hudson.model.AbstractBuild;
 import hudson.model.AbstractProject;
 import hudson.model.BuildListener;
+import hudson.model.Computer;
+import hudson.model.Hudson;
 import hudson.model.Result;
+import hudson.model.TaskListener;
+import hudson.remoting.Callable;
 import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Publisher;
 import hudson.tasks.Recorder;
+import hudson.tasks.Maven.MavenInstallation;
+import hudson.tasks.Maven.ProjectWithMaven;
 import hudson.util.FormValidation;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Properties;
 import java.util.Map.Entry;
 
 import net.sf.json.JSONObject;
 
+import org.apache.commons.lang.StringUtils;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.deployer.ArtifactDeploymentException;
 import org.apache.maven.artifact.metadata.ArtifactMetadata;
@@ -115,7 +126,8 @@ public class RedeployPublisher extends Recorder {
         listener.getLogger().println("Deploying artifacts to "+url);
         try {
             
-            MavenEmbedder embedder = MavenUtil.createEmbedder(listener,build);
+            //MavenEmbedder embedder = MavenUtil.createEmbedder(listener,build);
+            MavenEmbedder embedder = createEmbedder(listener,build);
             ArtifactRepositoryLayout layout =
                 (ArtifactRepositoryLayout) embedder.lookup( ArtifactRepositoryLayout.ROLE,"default");
             ArtifactRepositoryFactory factory =
@@ -140,7 +152,73 @@ public class RedeployPublisher extends Recorder {
         return true;
     }
 
-
+    /**
+     * 
+     * copy from MavenUtil but here we have to ignore localRepo path and setting as thoses paths comes
+     * from the remote node and can not exist in master see http://issues.jenkins-ci.org/browse/JENKINS-8711
+     * 
+     */
+    private MavenEmbedder createEmbedder(TaskListener listener, AbstractBuild<?,?> build) throws MavenEmbedderException, IOException, InterruptedException {
+        MavenInstallation m=null;
+        File settingsLoc = null;
+        String profiles = null;
+        Properties systemProperties = null;
+        String privateRepository = null;
+        
+        File tmpSettings = File.createTempFile( "jenkins", "temp-settings.xml" );
+        try {
+            AbstractProject project = build.getProject();
+            
+            // don't care here as it's executed in the master
+            //if (project instanceof ProjectWithMaven) {
+            //    m = ((ProjectWithMaven) project).inferMavenInstallation().forNode(Hudson.getInstance(),listener);
+            //}
+            if (project instanceof MavenModuleSet) {
+                profiles = ((MavenModuleSet) project).getProfiles();
+                systemProperties = ((MavenModuleSet) project).getMavenProperties();
+                
+                // olamy see  
+                // we have to take about the settings use for the project
+                // order tru configuration 
+                // TODO maybe in goals with -s,--settings last wins but not done in during pom parsing
+                // or -Dmaven.repo.local
+                // if not wet must get ~/.m2/settings.xml
+                
+                String altSettingsPath = ((MavenModuleSet) project).getAlternateSettings();
+                
+                if (StringUtils.isBlank( altSettingsPath ) ) {
+                    // get userHome from the node where job has been executed
+                    String remoteUserHome = project.getSomeWorkspace().act( new GetUserHome() );
+                    altSettingsPath = remoteUserHome + "/.m2/settings.xml";
+                }
+                
+                // we copy this file in the master in a  temporary file 
+                FilePath filePath = new FilePath( tmpSettings );
+                FilePath remoteSettings = project.getSomeWorkspace().child( altSettingsPath);
+                if (remoteSettings.exists()) {
+                    remoteSettings.copyTo( filePath );
+                    settingsLoc = tmpSettings;
+                }
+                
+            }
+            
+            return MavenUtil.createEmbedder(new MavenEmbedderRequest(listener,
+                                  m!=null?m.getHomeDir():null,
+                                  profiles,
+                                  systemProperties,
+                                  privateRepository,
+                                  settingsLoc ));
+        } finally {
+            tmpSettings.delete();
+        }
+    }
+    
+    private static final class GetUserHome implements Callable<String,IOException> {
+        public String call() throws IOException {
+            return System.getProperty("user.home");
+        }
+    }
+    
     
     /**
      * Obtains the {@link MavenAbstractArtifactRecord} that we'll work on.
@@ -338,6 +416,14 @@ public class RedeployPublisher extends Recorder {
         public Proxy getProxy()
         {
             return artifactRepository.getProxy();
+        }
+        public List<ArtifactRepository> getMirroredRepositories()
+        {
+            return Collections.emptyList();
+        }
+        public void setMirroredRepositories( List<ArtifactRepository> arg0 )
+        {
+            // noop            
         }
     }    
 }

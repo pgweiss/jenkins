@@ -76,7 +76,9 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.GregorianCalendar;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -631,6 +633,33 @@ public class Queue extends ResourceController implements Saveable {
      */
     public synchronized List<BuildableItem> getPendingItems() {
         return new ArrayList<BuildableItem>(pendings.values());
+    }
+
+    /**
+     * Gets all items that are in the queue but not blocked
+     *
+     * @since 1.402
+     */
+    public synchronized List<Item> getUnblockedItems() {
+    	List<Item> queuedNotBlocked = new ArrayList<Item>();
+        queuedNotBlocked.addAll(waitingList);
+        queuedNotBlocked.addAll(buildables);
+        queuedNotBlocked.addAll(pendings);
+        // but not 'blockedProjects'
+        return queuedNotBlocked;
+    }
+
+    /**
+     * Works just like {@link #getUnblockedItems()} but return tasks.
+     *
+     * @since 1.402
+     */
+    public synchronized Set<Task> getUnblockedTasks() {
+        List<Item> items = getUnblockedItems();
+        Set<Task> unblockedTasks = new HashSet<Task>(items.size());
+        for (Queue.Item t : items)
+            unblockedTasks.add(t.task);
+        return unblockedTasks;
     }
 
     /**

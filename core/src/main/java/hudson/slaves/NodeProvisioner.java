@@ -34,6 +34,7 @@ import hudson.model.MultiStageTimeSeries.TimeScale;
 import hudson.Extension;
 
 import java.awt.Color;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
 import java.util.concurrent.ExecutionException;
 import java.util.List;
@@ -84,7 +85,7 @@ public class NodeProvisioner {
      */
     private final Label label;
 
-    private List<PlannedNode> pendingLaunches = new ArrayList<PlannedNode>();
+    private List<PlannedNode> pendingLaunches = new CopyOnWriteArrayList<PlannedNode>();
 
     /**
      * Exponential moving average of the "planned capacity" over time, which is the number of
@@ -99,6 +100,17 @@ public class NodeProvisioner {
     public NodeProvisioner(Label label, LoadStatistics loadStatistics) {
         this.label = label;
         this.stat = loadStatistics;
+    }
+
+    /**
+     * Nodes that are being launched.
+     *
+     * @return
+     *      Can be empty but never null
+     * @since 1.401
+     */
+    public List<PlannedNode> getPendingLaunches() {
+        return new ArrayList<PlannedNode>(pendingLaunches);
     }
 
     /**
@@ -180,18 +192,21 @@ public class NodeProvisioner {
                 for( Cloud c : hudson.clouds ) {
                     if(excessWorkload<0)    break;  // enough slaves allocated
 
-                    // provisioning a new node should be conservative --- for example if exceeWorkload is 1.4,
-                    // we don't want to allocate two nodes but just one.
-                    // OTOH, because of the exponential decay, even when we need one slave, excess workload is always
-                    // something like 0.95, in which case we want to allocate one node.
-                    // so the threshold here is 1-MARGIN, and hence floor(excessWorkload+MARGIN) is needed to handle this.
-
-                    Collection<PlannedNode> additionalCapacities = c.provision(label, (int)Math.round(Math.floor(excessWorkload+m)));
-                    for (PlannedNode ac : additionalCapacities) {
-                        excessWorkload -= ac.numExecutors;
-                        LOGGER.info("Started provisioning "+ac.displayName+" from "+c.name+" with "+ac.numExecutors+" executors. Remaining excess workload:"+excessWorkload);
+                    // Make sure this cloud actually can provision for this label.
+                    if (c.canProvision(label)) {
+                        // provisioning a new node should be conservative --- for example if exceeWorkload is 1.4,
+                        // we don't want to allocate two nodes but just one.
+                        // OTOH, because of the exponential decay, even when we need one slave, excess workload is always
+                        // something like 0.95, in which case we want to allocate one node.
+                        // so the threshold here is 1-MARGIN, and hence floor(excessWorkload+MARGIN) is needed to handle this.
+                        
+                        Collection<PlannedNode> additionalCapacities = c.provision(label, (int)Math.round(Math.floor(excessWorkload+m)));
+                        for (PlannedNode ac : additionalCapacities) {
+                            excessWorkload -= ac.numExecutors;
+                            LOGGER.info("Started provisioning "+ac.displayName+" from "+c.name+" with "+ac.numExecutors+" executors. Remaining excess workload:"+excessWorkload);
+                        }
+                        pendingLaunches.addAll(additionalCapacities);
                     }
-                    pendingLaunches.addAll(additionalCapacities);
                 }
             }
         }
