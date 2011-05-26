@@ -38,6 +38,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.UnsupportedCharsetException;
 import java.util.Arrays;
 
+import org.jenkinsci.plugins.tokenmacro.TokenMacro;
 import org.kohsuke.stapler.framework.io.IOException2;
 
 /*
@@ -88,11 +89,14 @@ public abstract class AbstractMavenProcessFactory
      */
     private final FilePath workDir;
 
-    AbstractMavenProcessFactory(MavenModuleSet mms, Launcher launcher, EnvVars envVars, FilePath workDir) {
+    private final String mavenOpts;
+
+    AbstractMavenProcessFactory(MavenModuleSet mms, Launcher launcher, EnvVars envVars, String mavenOpts, FilePath workDir) {
         this.mms = mms;
         this.launcher = launcher;
         this.envVars = envVars;
         this.workDir = workDir;
+        this.mavenOpts = mavenOpts;
     }
 
     /**
@@ -205,6 +209,9 @@ public abstract class AbstractMavenProcessFactory
 
             MavenConsoleAnnotator mca = new MavenConsoleAnnotator(out,charset);
 
+            if ( mavenRemoteUseInet ) {
+                envVars.put(MAVEN_REMOTE_USEINET_ENV_VAR_NAME , "true" );
+            }
             final ArgumentListBuilder cmdLine = buildMavenAgentCmdLine( listener,acceptor.getPort());
             String[] cmds = cmdLine.toCommandArray();
             final Proc proc = launcher.launch().cmds(cmds).envs(envVars).stdout(mca).pwd(workDir).start();
@@ -243,8 +250,11 @@ public abstract class AbstractMavenProcessFactory
      */
     protected abstract ArgumentListBuilder buildMavenAgentCmdLine(BuildListener listener,int tcpPort) 
         throws IOException, InterruptedException;
-    
+
     public String getMavenOpts() {
+        if( this.mavenOpts != null )
+            return this.mavenOpts;
+
         String mavenOpts = mms.getMavenOpts();
 
         if ((mavenOpts==null) || (mavenOpts.trim().length()==0)) {
@@ -267,6 +277,7 @@ public abstract class AbstractMavenProcessFactory
         
         return envVars.expand(mavenOpts);
     }
+
 
     public MavenInstallation getMavenInstallation(TaskListener log) throws IOException, InterruptedException {
         MavenInstallation mi = mms.getMaven();
@@ -307,6 +318,10 @@ public abstract class AbstractMavenProcessFactory
     protected EnvVars getEnvVars() {
         return envVars;
     }
+
+    public static boolean mavenRemoteUseInet = Boolean.getBoolean("maven.remote.useinet");
+
+    public static final String MAVEN_REMOTE_USEINET_ENV_VAR_NAME = "MAVEN_REMOTE_USEINET";
     
     
 }

@@ -39,7 +39,8 @@ import java.util.concurrent.ThreadFactory;
 import java.util.List;
 import java.util.Collections;
 import java.util.logging.Logger;
-import static java.util.logging.Level.SEVERE;
+
+import org.apache.commons.codec.binary.Base64;
 
 /**
  * Slave agent engine that proactively connects to Hudson master.
@@ -149,7 +150,7 @@ public class Engine extends Thread {
                     // find out the TCP port
                     HttpURLConnection con = (HttpURLConnection)salURL.openConnection();
                     if (con instanceof HttpURLConnection && credentials != null) {
-                        String encoding = new sun.misc.BASE64Encoder().encode(credentials.getBytes());
+                        String encoding = new String(new Base64().encodeBase64(credentials.getBytes()));
                         con.setRequestProperty("Authorization", "Basic " + encoding);
                     }
                     try {
@@ -234,27 +235,13 @@ public class Engine extends Thread {
                     }
                 }
 
-                final Socket socket = s;
                 final Channel channel = new Channel("channel", executor,
                         in,
                         new BufferedOutputStream(s.getOutputStream()));
-                PingThread t = new PingThread(channel) {
-                    protected void onDead() {
-                        try {
-                            if (!channel.isInClosed()) {
-                                LOGGER.info("Ping failed. Terminating the socket.");
-                                socket.close();
-                            }
-                        } catch (IOException e) {
-                            LOGGER.log(SEVERE, "Failed to terminate the socket", e);
-                        }
-                    }
-                };
-                t.start();
+                
                 listener.status("Connected");
                 channel.join();
                 listener.status("Terminated");
-                t.interrupt();  // make sure the ping thread is terminated
                 listener.onDisconnect();
 
                 if(noReconnect)

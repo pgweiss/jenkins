@@ -194,6 +194,12 @@ img {
   border: 0;
 }
 
+div.disabled {
+    opacity : 0.4;
+    filter: alpha(opacity=40); // msie
+    background-color: #000;
+}
+
 table.tab {
   border-collapse: collapse;
 }
@@ -454,6 +460,10 @@ div.behavior-loading {
     opacity: 0.5;
     -ms-filter: "progid:DXImageTransform.Microsoft.Alpha(Opacity=50)";
     filter: alpha(opacity=50);
+}
+
+LABEL.attach-previous {
+    margin-left: 0.5em;
 }
 
 /* ======================== error/warning message (mainly in the form.) Use them on block elements ======================== */

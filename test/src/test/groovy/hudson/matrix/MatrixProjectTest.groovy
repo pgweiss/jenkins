@@ -122,7 +122,7 @@ public class MatrixProjectTest extends HudsonTestCase {
 
         p.getBuildersList().add(new UnstableBuilder());
         build = p.scheduleBuild2(0).get();
-        assertEquals(2, build.getRuns().size());
+        assertEquals(2, build.exactRuns.size());
     }
 
     @Override
@@ -278,5 +278,16 @@ public class MatrixProjectTest extends HudsonTestCase {
         } catch (TimeoutException e) {
             // expected
         }        
+    }
+
+    @Bug(9009)
+    void testTrickyNodeName() {
+        def names = [ createSlave("Sean's Workstation",null), createSlave("John\"s Workstation",null) ]*.nodeName;
+        def p = createMatrixProject();
+        p.setAxes(new AxisList([new LabelAxis("label",names)]));
+        configRoundtrip(p);
+
+        LabelAxis a = p.axes.find("label");
+        assertEquals(a.values as Set,names as Set);
     }
 }

@@ -31,6 +31,7 @@ import hudson.Util;
 import hudson.FilePath;
 import hudson.console.AnnotatedLargeText;
 import hudson.console.ExpandableDetailsNote;
+import hudson.model.listeners.RunListener;
 import hudson.slaves.WorkspaceList;
 import hudson.slaves.NodeProperty;
 import hudson.slaves.WorkspaceList.Lease;
@@ -51,6 +52,7 @@ import hudson.tasks.Publisher;
 import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.BuildTrigger;
 import hudson.tasks.test.AbstractTestResultAction;
+import hudson.tasks.test.AggregatedTestResultAction;
 import hudson.util.AdaptedIterator;
 import hudson.util.Iterators;
 import hudson.util.LogTaskListener;
@@ -65,6 +67,7 @@ import javax.servlet.ServletException;
 import java.io.File;
 import java.io.IOException;
 import java.io.StringWriter;
+import java.text.MessageFormat;
 import java.util.AbstractSet;
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -267,7 +270,7 @@ public abstract class AbstractBuild<P extends AbstractProject<P,R>,R extends Abs
             R p = getPreviousCompletedBuild();
             if (p !=null && isBuilding()) {
                 Result pr = p.getResult();
-                if (pr!=null && pr.isWorseThan(Result.UNSTABLE)) {
+                if (pr!=null && pr.isWorseThan(Result.SUCCESS)) {
                     // we are still building, so this is just the current latest information,
                     // but we seems to be failing so far, so inherit culprits from the previous build.
                     // isBuilding() check is to avoid recursion when loading data from old Hudson, which doesn't record
@@ -281,7 +284,7 @@ public abstract class AbstractBuild<P extends AbstractProject<P,R>,R extends Abs
             if (upstreamCulprits) {
                 // If we have dependencies since the last successful build, add their authors to our list
                 if (getPreviousNotFailedBuild() != null) {
-                    Map <AbstractProject,AbstractBuild.DependencyChange> depmap = getDependencyChanges(getPreviousNotFailedBuild());
+                    Map <AbstractProject,AbstractBuild.DependencyChange> depmap = getDependencyChanges(getPreviousSuccessfulBuild());
                     for (AbstractBuild.DependencyChange dep : depmap.values()) {
                         for (AbstractBuild<?,?> b : dep.getBuilds()) {
                             for (Entry entry : b.getChangeSet()) {
@@ -391,6 +394,11 @@ public abstract class AbstractBuild<P extends AbstractProject<P,R>,R extends Abs
          *      Passed in for the convenience. The returned path must be registered to this object.
          */
         protected Lease decideWorkspace(Node n, WorkspaceList wsl) throws InterruptedException, IOException {
+            String customWorkspace = getProject().getCustomWorkspace();
+            if (customWorkspace != null) {
+                // we allow custom workspaces to be concurrently used between jobs.
+                return Lease.createDummyLease(n.getRootPath().child(getEnvironment(listener).expand(customWorkspace)));
+            }
             // TODO: this cast is indicative of abstraction problem
             return wsl.allocate(n.getWorkspaceFor((TopLevelItem)getProject()));
         }
@@ -472,6 +480,13 @@ public abstract class AbstractBuild<P extends AbstractProject<P,R>,R extends Abs
             }
 
             buildEnvironments = new ArrayList<Environment>();
+
+            for (RunListener rl: RunListener.all()) {
+                Environment environment = rl.setUpEnvironment(AbstractBuild.this, l, listener);
+                if (environment != null) {
+                    buildEnvironments.add(environment);
+                }
+            }
 
             for (NodeProperty nodeProperty: Hudson.getInstance().getGlobalNodeProperties()) {
                 Environment environment = nodeProperty.setUp(AbstractBuild.this, l, listener);
@@ -620,7 +635,10 @@ public abstract class AbstractBuild<P extends AbstractProject<P,R>,R extends Abs
             for (BuildStep bs : buildSteps) {
                 if ((bs instanceof Publisher && ((Publisher)bs).needsToRunAfterFinalized()) ^ phase)
                     try {
-                        r &= perform(bs,listener);
+                        if (!perform(bs,listener)) {
+                            LOGGER.fine(MessageFormat.format("{0} : {1} failed", AbstractBuild.this.toString(), bs));
+                            r = false;
+                        }
                     } catch (Exception e) {
                         String msg = "Publisher " + bs.getClass().getName() + " aborted due to exception";
                         e.printStackTrace(listener.error(msg));
@@ -641,7 +659,26 @@ public abstract class AbstractBuild<P extends AbstractProject<P,R>,R extends Abs
             } catch (AbstractMethodError e) {
                 mon = BuildStepMonitor.BUILD;
             }
-            return mon.perform(bs, AbstractBuild.this, launcher, listener);
+            Result oldResult = AbstractBuild.this.getResult();
+            boolean canContinue = mon.perform(bs, AbstractBuild.this, launcher, listener);
+            Result newResult = AbstractBuild.this.getResult();
+            if (newResult != oldResult) {
+                String buildStepName = getBuildStepName(bs);
+                listener.getLogger().format("Build step '%s' changed build result to %s%n", buildStepName, newResult);
+            }
+            if (!canContinue) {
+                String buildStepName = getBuildStepName(bs);
+                listener.getLogger().format("Build step '%s' marked build as failure%n", buildStepName);
+            }
+            return canContinue;
+        }
+
+        private String getBuildStepName(BuildStep bs) {
+            if (bs instanceof Describable<?>) {
+                return ((Describable<?>) bs).getDescriptor().getDisplayName();
+            } else {
+                return bs.getClass().getSimpleName();
+            }
         }
 
         protected final boolean preBuild(BuildListener listener,Map<?,? extends BuildStep> steps) {
@@ -654,8 +691,10 @@ public abstract class AbstractBuild<P extends AbstractProject<P,R>,R extends Abs
 
         protected final boolean preBuild(BuildListener listener,Iterable<? extends BuildStep> steps) {
             for (BuildStep bs : steps)
-                if (!bs.prebuild(AbstractBuild.this,listener))
+                if (!bs.prebuild(AbstractBuild.this,listener)) {
+                    LOGGER.fine(MessageFormat.format("{0} : {1} failed", AbstractBuild.this.toString(), bs));
                     return false;
+                }
             return true;
         }
     }
@@ -820,6 +859,9 @@ public abstract class AbstractBuild<P extends AbstractProject<P,R>,R extends Abs
                 bw.makeBuildVariables(this,r);
         }
 
+        for (BuildVariableContributor bvc : BuildVariableContributor.all())
+            bvc.buildVariablesFor(this,r);
+
         return r;
     }
 
@@ -835,6 +877,13 @@ public abstract class AbstractBuild<P extends AbstractProject<P,R>,R extends Abs
      */
     public AbstractTestResultAction getTestResultAction() {
         return getAction(AbstractTestResultAction.class);
+    }
+
+    /**
+     * Gets {@link AggregatedTestResultAction} associated with this build if any.
+     */
+    public AggregatedTestResultAction getAggregatedTestResultAction() {
+        return getAction(AggregatedTestResultAction.class);
     }
 
     /**

@@ -37,6 +37,7 @@ import hudson.model.DependencyGraph;
 import hudson.model.DependencyGraph.Dependency;
 import hudson.model.Hudson;
 import hudson.model.Item;
+import hudson.model.ItemGroup;
 import hudson.model.Items;
 import hudson.model.Job;
 import hudson.model.Project;
@@ -94,9 +95,13 @@ public class BuildTrigger extends Recorder implements DependecyDeclarer {
      */
     private final Result threshold;
 
-    @DataBoundConstructor
     public BuildTrigger(String childProjects, boolean evenIfUnstable) {
         this(childProjects,evenIfUnstable ? Result.UNSTABLE : Result.SUCCESS);
+    }
+
+    @DataBoundConstructor
+    public BuildTrigger(String childProjects, String threshold) {
+        this(childProjects, Result.fromString(StringUtils.defaultString(threshold, Result.SUCCESS.toString())));
     }
 
     public BuildTrigger(String childProjects, Result threshold) {
@@ -125,8 +130,20 @@ public class BuildTrigger extends Recorder implements DependecyDeclarer {
             return threshold;
     }
 
+    /**
+     * @deprecated as of 1.406
+     *      Use {@link #getChildProjects(ItemGroup)}
+     */
     public List<AbstractProject> getChildProjects() {
-        return Items.fromNameList(childProjects,AbstractProject.class);
+        return getChildProjects(Hudson.getInstance());
+    }
+
+    public List<AbstractProject> getChildProjects(AbstractProject owner) {
+        return getChildProjects(owner==null?null:owner.getParent());
+    }
+
+    public List<AbstractProject> getChildProjects(ItemGroup base) {
+        return Items.fromNameList(base,childProjects,AbstractProject.class);
     }
 
     public BuildStepMonitor getRequiredMonitorService() {
@@ -136,9 +153,17 @@ public class BuildTrigger extends Recorder implements DependecyDeclarer {
     /**
      * Checks if this trigger has the exact same set of children as the given list.
      */
-    public boolean hasSame(Collection<? extends AbstractProject> projects) {
-        List<AbstractProject> children = getChildProjects();
+    public boolean hasSame(AbstractProject owner, Collection<? extends AbstractProject> projects) {
+        List<AbstractProject> children = getChildProjects(owner);
         return children.size()==projects.size() && children.containsAll(projects);
+    }
+
+    /**
+     * @deprecated as of 1.406
+     *      Use {@link #hasSame(AbstractProject, Collection)}
+     */
+    public boolean hasSame(Collection<? extends AbstractProject> projects) {
+        return hasSame(null,projects);
     }
 
     @Override
@@ -176,7 +201,19 @@ public class BuildTrigger extends Recorder implements DependecyDeclarer {
             }
         });
 
+        List<Dependency> depsToBuild = new ArrayList<Dependency>();
         for (Dependency dep : downstreamProjects) {
+            if (dep instanceof DependencyGraph.DependencyGroup) {
+                for (Dependency d : ((DependencyGraph.DependencyGroup)dep).getGroup()) {
+                    depsToBuild.add(d);
+                }
+            }
+            else {
+                depsToBuild.add(dep);
+            }
+        }
+                    
+        for (Dependency dep : depsToBuild) {
             AbstractProject p = dep.getDownstreamProject();
             if (p.isDisabled()) {
                 logger.println(Messages.BuildTrigger_Disabled(p.getName()));
@@ -200,7 +237,7 @@ public class BuildTrigger extends Recorder implements DependecyDeclarer {
     }
 
     public void buildDependencyGraph(AbstractProject owner, DependencyGraph graph) {
-        for (AbstractProject p : getChildProjects())
+        for (AbstractProject p : getChildProjects(owner))
             graph.addDependency(new Dependency(owner, p) {
                 @Override
                 public boolean shouldTriggerBuild(AbstractBuild build, TaskListener listener,
@@ -276,7 +313,7 @@ public class BuildTrigger extends Recorder implements DependecyDeclarer {
             }
             return new BuildTrigger(
                 childProjectsString,
-                formData.has("evenIfUnstable") && formData.getBoolean("evenIfUnstable"));
+                formData.optString("threshold", Result.SUCCESS.toString()));
         }
 
         @Override
@@ -292,16 +329,16 @@ public class BuildTrigger extends Recorder implements DependecyDeclarer {
         /**
          * Form validation method.
          */
-        public FormValidation doCheck(@AncestorInPath AccessControlled subject, @QueryParameter String value ) {
+        public FormValidation doCheck(@AncestorInPath Item project, @QueryParameter String value ) {
             // Require CONFIGURE permission on this project
-            if(!subject.hasPermission(Item.CONFIGURE))      return FormValidation.ok();
+            if(!project.hasPermission(Item.CONFIGURE))      return FormValidation.ok();
 
             StringTokenizer tokens = new StringTokenizer(Util.fixNull(value),",");
             boolean hasProjects = false;
             while(tokens.hasMoreTokens()) {
                 String projectName = tokens.nextToken().trim();
                 if (StringUtils.isNotBlank(projectName)) {
-                    Item item = Hudson.getInstance().getItemByFullName(projectName,Item.class);
+                    Item item = Hudson.getInstance().getItem(projectName,project,Item.class);
                     if(item==null)
                         return FormValidation.error(Messages.BuildTrigger_NoSuchProject(projectName,AbstractProject.findNearest(projectName).getName()));
                     if(!(item instanceof AbstractProject))

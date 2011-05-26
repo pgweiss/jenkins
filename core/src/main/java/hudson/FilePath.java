@@ -39,6 +39,7 @@ import hudson.remoting.Pipe;
 import hudson.remoting.RemoteOutputStream;
 import hudson.remoting.VirtualChannel;
 import hudson.remoting.RemoteInputStream;
+import hudson.remoting.Which;
 import hudson.security.AccessControlled;
 import hudson.util.DirScanner;
 import hudson.util.IOException2;
@@ -48,7 +49,6 @@ import hudson.util.IOUtils;
 import static hudson.util.jna.GNUCLibrary.LIBC;
 import static hudson.Util.fixEmpty;
 import static hudson.FilePath.TarCompression.GZIP;
-import hudson.os.PosixAPI;
 import hudson.org.apache.tools.tar.TarInputStream;
 import hudson.util.io.Archiver;
 import hudson.util.io.ArchiverFactory;
@@ -86,6 +86,7 @@ import java.util.List;
 import java.util.StringTokenizer;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.concurrent.ExecutionException;
@@ -1132,7 +1133,7 @@ public final class FilePath implements Serializable {
         if(!isUnix())   return -1;
         return act(new FileCallable<Integer>() {
             public Integer invoke(File f, VirtualChannel channel) throws IOException {
-                return PosixAPI.get().stat(f.getPath()).mode();
+                return IOUtils.mode(f);
             }
         });
     }
@@ -1199,9 +1200,23 @@ public final class FilePath implements Serializable {
      *      can be empty but always non-null.
      */
     public FilePath[] list(final String includes) throws IOException, InterruptedException {
+        return list(includes, null);
+    }
+
+    /**
+     * List up files in this directory that matches the given Ant-style filter.
+     *
+     * @param includes
+     * @param excludes
+     *      See {@link FileSet} for the syntax. String like "foo/*.zip" or "foo/*&#42;/*.xml"
+     * @return
+     *      can be empty but always non-null.
+     * @since 1.407
+     */
+    public FilePath[] list(final String includes, final String excludes) throws IOException, InterruptedException {
         return act(new FileCallable<FilePath[]>() {
             public FilePath[] invoke(File f, VirtualChannel channel) throws IOException {
-                String[] files = glob(f,includes);
+                String[] files = glob(f,includes,excludes);
 
                 FilePath[] r = new FilePath[files.length];
                 for( int i=0; i<r.length; i++ )
@@ -1218,10 +1233,10 @@ public final class FilePath implements Serializable {
      * @return
      *      A set of relative file names from the base directory.
      */
-    private static String[] glob(File dir, String includes) throws IOException {
+    private static String[] glob(File dir, String includes, String excludes) throws IOException {
         if(isAbsolute(includes))
             throw new IOException("Expecting Ant GLOB pattern, but saw '"+includes+"'. See http://ant.apache.org/manual/Types/fileset.html for syntax");
-        FileSet fs = Util.createFileSet(dir,includes);
+        FileSet fs = Util.createFileSet(dir,includes,excludes);
         DirectoryScanner ds = fs.getDirectoryScanner(new Project());
         String[] files = ds.getIncludedFiles();
         return files;
@@ -1405,6 +1420,31 @@ public final class FilePath implements Serializable {
                 }
             }
         });
+
+        // make sure the write fully happens before we return.
+        syncIO();
+    }
+
+    private void syncIO() throws InterruptedException {
+        try {
+            if (channel!=null)
+                _syncIO();
+        } catch (AbstractMethodError e) {
+            // legacy slave.jar. Handle this gracefully
+            try {
+                LOGGER.log(Level.WARNING,"Looks like an old slave.jar. Please update "+ Which.jarFile(Channel.class)+" to the new version",e);
+            } catch (IOException _) {
+                // really ignore this time
+            }
+        }
+    }
+
+    /**
+     * A pointless function to work around what appears to be a HotSpot problem. See JENKINS-5756 and bug 6933067
+     * on BugParade for more details.
+     */
+    private void _syncIO() throws InterruptedException {
+        channel.syncLocalIO();
     }
 
     /**

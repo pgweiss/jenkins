@@ -78,7 +78,6 @@ import java.util.GregorianCalendar;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -201,15 +200,15 @@ public class Queue extends ResourceController implements Saveable {
         /**
          * Verifies that the {@link Executor} represented by this object is capable of executing the given task.
          */
-        public boolean canTake(Task task) {
+        public boolean canTake(BuildableItem item) {
             Node node = getNode();
             if (node==null)     return false;   // this executor is about to die
 
-            if(node.canTake(task)!=null)
+            if(node.canTake(item)!=null)
                 return false;   // this node is not able to take the task
 
             for (QueueTaskDispatcher d : QueueTaskDispatcher.all())
-                if (d.canTake(node,task)!=null)
+                if (d.canTake(node,item)!=null)
                     return false;
 
             return isAvailable();
@@ -614,7 +613,7 @@ public class Queue extends ResourceController implements Saveable {
     private void _getBuildableItems(Computer c, ItemList<BuildableItem> col, List<BuildableItem> result) {
         Node node = c.getNode();
         for (BuildableItem p : col.values()) {
-            if (node.canTake(p.task) == null)
+            if (node.canTake(p) == null)
                 result.add(p);
         }
     }
@@ -756,6 +755,13 @@ public class Queue extends ResourceController implements Saveable {
     public synchronized WorkUnit pop() throws InterruptedException {
         final Executor exec = Executor.currentExecutor();
 
+        if (exec instanceof OneOffExecutor) {
+            OneOffExecutor ooe = (OneOffExecutor) exec;
+            final WorkUnit wu = ooe.getAssignedWorkUnit();
+            pendings.remove(wu.context.item);
+            return wu;
+        }
+
         try {
             while (true) {
                 final JobOffer offer = new JobOffer(exec);
@@ -784,7 +790,7 @@ public class Queue extends ResourceController implements Saveable {
 
                     List<JobOffer> candidates = new ArrayList<JobOffer>(parked.size());
                     for (JobOffer j : parked.values())
-                        if(j.canTake(p.task))
+                        if(j.canTake(p))
                             candidates.add(j);
 
                     MappingWorksheet ws = new MappingWorksheet(p, candidates);
@@ -910,10 +916,9 @@ public class Queue extends ResourceController implements Saveable {
             BlockedItem p = itr.next();
             if (!isBuildBlocked(p.task) && allowNewBuildableTask(p.task)) {
                 // ready to be executed
-                if (makeBuildable(new BuildableItem(p))) {
                 LOGGER.fine(p.task.getFullDisplayName() + " no longer blocked");
                 itr.remove();
-                }
+                makeBuildable(new BuildableItem(p));
             }
         }
 
@@ -925,13 +930,10 @@ public class Queue extends ResourceController implements Saveable {
 
             waitingList.remove(top);
             Task p = top.task;
-            boolean isReady = false;
             if (!isBuildBlocked(p) && allowNewBuildableTask(p)) {
-                // maybe ready to be executed immediately
-                isReady = makeBuildable(new BuildableItem(top));
-            }
-            if (isReady) {
+                // ready to be executed immediately
                 LOGGER.fine(p.getFullDisplayName() + " ready to build");
+                makeBuildable(new BuildableItem(top));
             } else {
                 // this can't be built now because another build is in progress
                 // set this project aside.
@@ -945,7 +947,7 @@ public class Queue extends ResourceController implements Saveable {
         	s.sortBuildableItems(buildables);
     }
 
-    private boolean makeBuildable(BuildableItem p) {
+    private void makeBuildable(BuildableItem p) {
         if(Hudson.FLYWEIGHT_SUPPORT && p.task instanceof FlyweightTask && !ifBlockedByHudsonShutdown(p.task)) {
             ConsistentHash<Node> hash = new ConsistentHash<Node>(new Hash<Node>() {
                 public String hash(Node node) {
@@ -962,35 +964,15 @@ public class Queue extends ResourceController implements Saveable {
                 Computer c = n.toComputer();
                 if (c==null || c.isOffline())    continue;
                 if (lbl!=null && !lbl.contains(n))  continue;
-
-                // Prevent multiple instances of a project's FlyWeightTask
-                // from all executing on the same computer at the same time.
-                // Without this logic, queuing-up several builds for a
-                // parameterized matrix project didn't work:  parent builds
-                // weren't waiting their turn in the queue.
-
-                List<OneOffExecutor> oneOffExecutors = c.getOneOffExecutors();
-                for (OneOffExecutor ooe : oneOffExecutors) {
-                    Queue.Executable exe = ooe.getCurrentExecutable();
-                    if (exe == null)
-                        return false;
-                    if (exe instanceof AbstractBuild) {
-                        AbstractBuild b = (AbstractBuild) exe;
-                        String running = b.getProject().getName();
-                        String toRun = p.task.getName();
-                        if (toRun.equals(running))
-                            return false;
-                    }
-                }
                 c.startFlyWeightTask(new WorkUnitContext(p).createWorkUnit(p.task));
-                return true;
+                pendings.add(p);
+                return;
             }
             // if the execution get here, it means we couldn't schedule it anywhere.
             // so do the scheduling like other normal jobs.
         }
         
         buildables.put(p.task,p);
-        return true;
     }
 
     public static boolean ifBlockedByHudsonShutdown(Task task) {

@@ -87,7 +87,7 @@ public abstract class ExtensionFinder implements ExtensionPoint {
     public abstract <T> Collection<ExtensionComponent<T>> find(Class<T> type, Hudson hudson);
 
     /**
-     * A pointless function to work around what appears to be a HotSpot problem. See HUDSON-5756 and bug 6933067
+     * A pointless function to work around what appears to be a HotSpot problem. See JENKINS-5756 and bug 6933067
      * on BugParade for more details.
      */
     public <T> Collection<ExtensionComponent<T>> _find(Class<T> type, Hudson hudson) {
@@ -184,11 +184,9 @@ public abstract class ExtensionFinder implements ExtensionPoint {
                 } catch (LinkageError e) {
                     // sometimes the instantiation fails in an indirect classloading failure,
                     // which results in a LinkageError
-                    LOGGER.log(item.annotation().optional() ? Level.FINE : Level.WARNING,
-                               "Failed to load "+item.className(), e);
+                    LOGGER.log(logLevel(item), "Failed to load "+item.className(), e);
                 } catch (InstantiationException e) {
-                    LOGGER.log(item.annotation().optional() ? Level.FINE : Level.WARNING,
-                               "Failed to load "+item.className(), e);
+                    LOGGER.log(logLevel(item), "Failed to load "+item.className(), e);
                 }
             }
 
@@ -219,14 +217,17 @@ public abstract class ExtensionFinder implements ExtensionPoint {
                     // this appears to be the only way to force a class initialization
                     Class.forName(extType.getName(),true,extType.getClassLoader());
                 } catch (InstantiationException e) {
-                    LOGGER.log(item.annotation().optional() ? Level.FINE : Level.WARNING,
-                               "Failed to scout "+item.className(), e);
+                    LOGGER.log(logLevel(item), "Failed to scout "+item.className(), e);
                 } catch (ClassNotFoundException e) {
-                    LOGGER.log(Level.WARNING,"Failed to scout "+item.className(), e);
+                    LOGGER.log(logLevel(item), "Failed to scout "+item.className(), e);
                 } catch (LinkageError e) {
-                    LOGGER.log(Level.WARNING,"Failed to scout "+item.className(), e);
+                    LOGGER.log(logLevel(item), "Failed to scout "+item.className(), e);
                 }
             }
+        }
+
+        private Level logLevel(IndexItem<Extension, Object> item) {
+            return item.annotation().optional() ? Level.FINE : Level.WARNING;
         }
     }
     

@@ -70,6 +70,7 @@ import hudson.scm.SCMDescriptor;
 import hudson.util.Secret;
 import hudson.views.MyViewsTabBar;
 import hudson.views.ViewsTabBar;
+import hudson.widgets.RenderOnDemandClosure;
 import org.acegisecurity.providers.anonymous.AnonymousAuthenticationToken;
 import org.apache.commons.jelly.JellyContext;
 import org.apache.commons.jelly.JellyTagException;
@@ -83,6 +84,7 @@ import org.kohsuke.stapler.Ancestor;
 import org.kohsuke.stapler.Stapler;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
+import org.kohsuke.stapler.jelly.InternationalizedStringExpression.RawHtmlArgument;
 
 import javax.servlet.ServletException;
 import javax.servlet.http.Cookie;
@@ -535,6 +537,34 @@ public class Functions {
 
     public static String xmlEscape(String s) {
         return Util.xmlEscape(s);
+    }
+
+    public static String xmlUnescape(String s) {
+        return s.replace("&lt;","<").replace("&gt;",">").replace("&amp;","&");
+    }
+
+    public static String htmlAttributeEscape(String text) {
+        StringBuilder buf = new StringBuilder(text.length()+64);
+        for( int i=0; i<text.length(); i++ ) {
+            char ch = text.charAt(i);
+            if(ch=='<')
+                buf.append("&lt;");
+            else
+            if(ch=='>')
+                buf.append("&gt;");
+            else
+            if(ch=='&')
+                buf.append("&amp;");
+            else
+            if(ch=='"')
+                buf.append("&quot;");
+            else
+            if(ch=='\'')
+                buf.append("&#39;");
+            else
+                buf.append(ch);
+        }
+        return buf.toString();
     }
 
     public static void checkPermission(Permission permission) throws IOException, ServletException {
@@ -1095,7 +1125,6 @@ public class Functions {
     public static String getActionUrl(String itUrl,Action action) {
         String urlName = action.getUrlName();
         if(urlName==null)   return null;    // to avoid NPE and fail to render the whole page
-
         if(SCHEME.matcher(urlName).matches())
             return urlName; // absolute URL
         if(urlName.startsWith("/"))
@@ -1314,4 +1343,38 @@ public class Functions {
         return Boolean.getBoolean("hudson.security.ArtifactsPermission");
     }
 
+    public static String createRenderOnDemandProxy(JellyContext context, String attributesToCapture) {
+        return Stapler.getCurrentRequest().createJavaScriptProxy(new RenderOnDemandClosure(context,attributesToCapture));
+    }
+
+    public static String getCurrentDescriptorByNameUrl() {
+        return Descriptor.getCurrentDescriptorByNameUrl();
+    }
+    
+    public static String setCurrentDescriptorByNameUrl(String value) {
+        String o = getCurrentDescriptorByNameUrl();
+        Stapler.getCurrentRequest().setAttribute("currentDescriptorByNameUrl", value);
+
+        return o;
+    }
+
+    public static void restoreCurrentDescriptorByNameUrl(String old) {
+        Stapler.getCurrentRequest().setAttribute("currentDescriptorByNameUrl", old);
+    }
+
+    public static List<String> getRequestHeaders(String name) {
+        List<String> r = new ArrayList<String>();
+        Enumeration e = Stapler.getCurrentRequest().getHeaders(name);
+        while (e.hasMoreElements()) {
+            r.add(e.nextElement().toString());
+        }
+        return r;
+    }
+
+    /**
+     * Used for arguments to internationalized expressions to avoid escape
+     */
+    public static Object rawHtml(Object o) {
+        return o==null ? null : new RawHtmlArgument(o);
+    }
 }

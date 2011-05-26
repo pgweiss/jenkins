@@ -30,6 +30,7 @@ import hudson.ExtensionPoint;
 import hudson.FilePath;
 import hudson.FileSystemProvisioner;
 import hudson.Launcher;
+import hudson.model.Descriptor.FormException;
 import hudson.model.Queue.Task;
 import hudson.model.labels.LabelAtom;
 import hudson.model.queue.CauseOfBlockage;
@@ -50,13 +51,17 @@ import hudson.util.TagCloud;
 import hudson.util.TagCloud.WeightFunction;
 
 import java.io.IOException;
+import java.lang.reflect.Type;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.List;
 import java.util.logging.Logger;
 
+import net.sf.json.JSONObject;
+import org.kohsuke.stapler.BindInterceptor;
 import org.kohsuke.stapler.Stapler;
+import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.export.ExportedBean;
 import org.kohsuke.stapler.export.Exported;
 
@@ -71,7 +76,7 @@ import org.kohsuke.stapler.export.Exported;
  * @see NodeDescriptor
  */
 @ExportedBean
-public abstract class Node extends AbstractModelObject implements Describable<Node>, ExtensionPoint, AccessControlled {
+public abstract class Node extends AbstractModelObject implements ReconfigurableDescribable<Node>, ExtensionPoint, AccessControlled {
 
     private static final Logger LOGGER = Logger.getLogger(Node.class.getName());
 
@@ -280,9 +285,25 @@ public abstract class Node extends AbstractModelObject implements Describable<No
      * task cannot be run.
      *
      * @since 1.360
+     * @deprecated as of 1.413
+     *      Use {@link #canTake(Queue.BuildableItem)}
      */
     public CauseOfBlockage canTake(Task task) {
-        Label l = task.getAssignedLabel();
+        return null;
+    }
+
+    /**
+     * Called by the {@link Queue} to determine whether or not this node can
+     * take the given task. The default checks include whether or not this node
+     * is part of the task's assigned label, whether this node is in
+     * {@link Mode#EXCLUSIVE} mode if it is not in the task's assigned label,
+     * and whether or not any of this node's {@link NodeProperty}s say that the
+     * task cannot be run.
+     *
+     * @since 1.413
+     */
+    public CauseOfBlockage canTake(Queue.BuildableItem item) {
+        Label l = item.task.getAssignedLabel();
         if(l!=null && !l.contains(this))
             return CauseOfBlockage.fromMessage(Messages._Node_LabelMissing(getNodeName(),l));   // the task needs to be executed on label that this node doesn't have.
 
@@ -292,7 +313,7 @@ public abstract class Node extends AbstractModelObject implements Describable<No
         // Check each NodeProperty to see whether they object to this node
         // taking the task
         for (NodeProperty prop: getNodeProperties()) {
-            CauseOfBlockage c = prop.canTake(task);
+            CauseOfBlockage c = prop.canTake(item);
             if (c!=null)    return c;
         }
 
@@ -360,6 +381,34 @@ public abstract class Node extends AbstractModelObject implements Describable<No
 
     public final boolean hasPermission(Permission permission) {
         return getACL().hasPermission(permission);
+    }
+
+    public Node reconfigure(final StaplerRequest req, JSONObject form) throws FormException {
+        if (form==null)     return null;
+
+        final JSONObject jsonForProperties = form.optJSONObject("nodeProperties");
+        BindInterceptor old = req.setBindListener(new BindInterceptor() {
+            @Override
+            public Object onConvert(Type targetType, Class targetTypeErasure, Object jsonSource) {
+                if (jsonForProperties!=jsonSource)  return DEFAULT;
+
+                try {
+                    DescribableList<NodeProperty<?>, NodePropertyDescriptor> tmp = new DescribableList<NodeProperty<?>, NodePropertyDescriptor>(Saveable.NOOP,getNodeProperties().toList());
+                    tmp.rebuild(req, jsonForProperties, NodeProperty.all());
+                    return tmp.toList();
+                } catch (FormException e) {
+                    throw new IllegalArgumentException(e);
+                } catch (IOException e) {
+                    throw new IllegalArgumentException(e);
+                }
+            }
+        });
+
+        try {
+            return getDescriptor().newInstance(req, form);
+        } finally {
+            req.setBindListener(old);
+        }
     }
 
     public abstract NodeDescriptor getDescriptor();

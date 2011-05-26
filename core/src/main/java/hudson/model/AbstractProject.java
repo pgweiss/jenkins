@@ -1,10 +1,10 @@
 /*
  * The MIT License
  * 
- * Copyright (c) 2004-2010, Sun Microsystems, Inc., Kohsuke Kawaguchi,
+ * Copyright (c) 2004-2011, Sun Microsystems, Inc., Kohsuke Kawaguchi,
  * Brian Westrich, Erik Ramfelt, Ertan Deniz, Jean-Baptiste Quenot,
  * Luca Domenico Milanesio, R. Tyler Ballance, Stephen Connolly, Tom Huybrechts,
- * id:cactusman, Yahoo! Inc.
+ * id:cactusman, Yahoo! Inc., Andrew Bayer
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -100,7 +100,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -201,11 +200,6 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
      */
     private volatile String jdk;
 
-    /**
-     * @deprecated since 2007-01-29.
-     */
-    private transient boolean enableRemoteTrigger;
-
     private volatile BuildAuthorizationToken authToken = null;
 
     /**
@@ -225,6 +219,13 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
 
     private boolean concurrentBuild;
 
+    /**
+     * See {@link #setCustomWorkspace(String)}.
+     *
+     * @since 1.410
+     */
+    private String customWorkspace;
+    
     protected AbstractProject(ItemGroup parent, String name) {
         super(parent,name);
 
@@ -253,8 +254,6 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
             }
         });
 
-        // boolean! Can't tell if xml file contained false..
-        if (enableRemoteTrigger) OldDataMonitor.report(this, "1.77");
         if(triggers==null) {
             // it didn't exist in < 1.28
             triggers = new Vector<Trigger<?>>();
@@ -635,7 +634,7 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
 
         Set<AbstractProject> upstream = Collections.emptySet();
         if(req.getParameter("pseudoUpstreamTrigger")!=null) {
-            upstream = new HashSet<AbstractProject>(Items.fromNameList(req.getParameter("upstreamProjects"),AbstractProject.class));
+            upstream = new HashSet<AbstractProject>(Items.fromNameList(getParent(),req.getParameter("upstreamProjects"),AbstractProject.class));
         }
 
         // dependency setting might have been changed by the user, so rebuild.
@@ -653,7 +652,7 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
                 // does 'p' include us in its BuildTrigger? 
                 DescribableList<Publisher,Descriptor<Publisher>> pl = p.getPublishersList();
                 BuildTrigger trigger = pl.get(BuildTrigger.class);
-                List<AbstractProject> newChildProjects = trigger == null ? new ArrayList<AbstractProject>():trigger.getChildProjects();
+                List<AbstractProject> newChildProjects = trigger == null ? new ArrayList<AbstractProject>():trigger.getChildProjects(p);
                 if(isUpstream) {
                     if(!newChildProjects.contains(this))
                         newChildProjects.add(this);
@@ -681,13 +680,13 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
                         pl.removeAll(BuildTrigger.class);
                         Set<AbstractProject> combinedChildren = new HashSet<AbstractProject>();
                         for (BuildTrigger bt : existingList)
-                            combinedChildren.addAll(bt.getChildProjects());
+                            combinedChildren.addAll(bt.getChildProjects(p));
                         existing = new BuildTrigger(new ArrayList<AbstractProject>(combinedChildren),existingList.get(0).getThreshold());
                         pl.add(existing);
                         break;
                     }
 
-                    if(existing!=null && existing.hasSame(newChildProjects))
+                    if(existing!=null && existing.hasSame(p,newChildProjects))
                         continue;   // no need to touch
                     pl.replace(new BuildTrigger(newChildProjects,
                         existing==null?Result.SUCCESS:existing.getThreshold()));
@@ -1065,7 +1064,8 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
             AbstractProject<?,?> bup = getBuildingDownstream();
             if (bup!=null)
                 return new BecauseOfDownstreamBuildInProgress(bup);
-        } else if (blockBuildWhenUpstreamBuilding()) {
+        }
+        if (blockBuildWhenUpstreamBuilding()) {
             AbstractProject<?,?> bup = getBuildingUpstream();
             if (bup!=null)
                 return new BecauseOfUpstreamBuildInProgress(bup);
@@ -1263,7 +1263,7 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
                 // lock the workspace of the last build
                 FilePath ws=lb.getWorkspace();
 
-                if (ws==null || !ws.exists()) {
+                if (workspaceOffline(lb)) {
                     // workspace offline. build now, or nothing will ever be built
                     Label label = getAssignedLabel();
                     if (label != null && label.isSelfLabel()) {
@@ -1325,6 +1325,24 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
             e.printStackTrace(listener.fatalError(Messages.AbstractProject_PollingABorted()));
             return NO_CHANGES;
         }
+    }
+    
+    private boolean workspaceOffline(R build) throws IOException, InterruptedException {
+        FilePath ws = build.getWorkspace();
+        if (ws==null || !ws.exists()) {
+            return true;
+        }
+        
+        Node builtOn = build.getBuiltOn();
+        if (builtOn == null) { // node built-on doesn't exist anymore
+            return true;
+        }
+        
+        if (builtOn.toComputer() == null) { // node still exists, but has 0 executors - o.s.l.t.
+            return true;
+        }
+        
+        return false;
     }
 
     /**
@@ -1439,7 +1457,7 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
         for (AbstractProject<?,?> ap : getUpstreamProjects()) {
             BuildTrigger buildTrigger = ap.getPublishersList().get(BuildTrigger.class);
             if (buildTrigger != null)
-                if (buildTrigger.getChildProjects().contains(this))
+                if (buildTrigger.getChildProjects(ap).contains(this))
                     result.add(ap);
         }        
         return result;
@@ -1636,6 +1654,12 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
         blockBuildWhenDownstreamBuilding = req.getParameter("blockBuildWhenDownstreamBuilding")!=null;
         blockBuildWhenUpstreamBuilding = req.getParameter("blockBuildWhenUpstreamBuilding")!=null;
 
+        if(req.hasParameter("customWorkspace")) {
+            customWorkspace = req.getParameter("customWorkspace.directory");
+        } else {
+            customWorkspace = null;
+        }
+        
         if(req.getParameter("hasSlaveAffinity")!=null) {
             assignedNode = Util.fixEmptyAndTrim(req.getParameter("_.assignedLabelString"));
         } else {
@@ -1694,7 +1718,7 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
             req.getView(this,"noWorkspace.jelly").forward(req,rsp);
             return null;
         } else {
-            return new DirectoryBrowserSupport(this, ws, getDisplayName()+" workspace", "folder.gif", true);
+            return new DirectoryBrowserSupport(this, ws, getDisplayName()+" workspace", "folder.png", true);
         }
     }
 
@@ -1836,7 +1860,20 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
             return FormValidation.ok();
         }
 
-       public AutoCompletionCandidates doAutoCompleteAssignedLabelString(@QueryParameter String value) {
+        public AutoCompletionCandidates doAutoCompleteUpstreamProjects(@QueryParameter String value) {
+            AutoCompletionCandidates candidates = new AutoCompletionCandidates();
+            List<Job> jobs = Hudson.getInstance().getItems(Job.class);
+            for (Job job: jobs) {
+                if (job.getFullName().startsWith(value)) {
+                    if (job.hasPermission(Item.READ)) {
+                        candidates.add(job.getFullName());
+                    }
+                }
+            }
+            return candidates;
+        }
+
+        public AutoCompletionCandidates doAutoCompleteAssignedLabelString(@QueryParameter String value) {
             AutoCompletionCandidates c = new AutoCompletionCandidates();
             Set<Label> labels = Hudson.getInstance().getLabels();
             List<String> queries = new AutoCompleteSeeder(value).getSeeds();
@@ -1935,5 +1972,30 @@ public abstract class AbstractProject<P extends AbstractProject<P,R>,R extends A
         if (item==null)
             throw new CmdLineException(null,Messages.AbstractItem_NoSuchJobExists(name,AbstractProject.findNearest(name).getFullName()));
         return item;
+    }
+
+    public String getCustomWorkspace() {
+        return customWorkspace;
+    }
+
+    /**
+     * User-specified workspace directory, or null if it's up to Jenkins.
+     *
+     * <p>
+     * Normally a project uses the workspace location assigned by its parent container,
+     * but sometimes people have builds that have hard-coded paths.
+     *
+     * <p>
+     * This is not {@link File} because it may have to hold a path representation on another OS.
+     *
+     * <p>
+     * If this path is relative, it's resolved against {@link Node#getRootPath()} on the node where this workspace
+     * is prepared. 
+     *
+     * @since 1.410
+     */
+    public void setCustomWorkspace(String customWorkspace) throws IOException {
+        this.customWorkspace= customWorkspace;
+        save();
     }
 }

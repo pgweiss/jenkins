@@ -172,6 +172,7 @@ public class Channel implements VirtualChannel, IChannel {
      */
     private final Vector<Listener> listeners = new Vector<Listener>();
     private int gcCounter;
+    private int commandsSent;
 
     /**
      * Total number of nanoseconds spent for remote class loading.
@@ -305,6 +306,10 @@ public class Channel implements VirtualChannel, IChannel {
         this(name,exec,mode,is,os,header,false);
     }
 
+    public Channel(String name, ExecutorService exec, Mode mode, InputStream is, OutputStream os, OutputStream header, boolean restricted) throws IOException {
+        this(name,exec,mode,is,os,header,restricted,null);
+    }
+
     /**
      * Creates a new channel.
      *
@@ -325,6 +330,12 @@ public class Channel implements VirtualChannel, IChannel {
      *      the data goes into the "binary mode". This is useful
      *      when the established communication channel might include some data that might
      *      be useful for debugging/trouble-shooting.
+     * @param base
+     *      Specify the classloader used for deserializing remote commands.
+     *      This is primarily related to {@link #getRemoteProperty(Object)}. Sometimes two parties
+     *      communicate over a channel and pass objects around as properties, but those types might not be
+     *      visible from the classloader loading the {@link Channel} class. In such a case, specify a classloader
+     *      so that those classes resolve. If null, {@code Channel.class.getClassLoader()} is used.
      * @param restricted
      *      If true, this channel won't accept {@link Command}s that allow the remote end to execute arbitrary closures
      *      --- instead they can only call methods on objects that are exported by this channel.
@@ -334,14 +345,17 @@ public class Channel implements VirtualChannel, IChannel {
      *      (provided that all the classes are already available in this JVM), so exactly how
      *      safe the resulting behavior is is up to discussion.
      */
-    public Channel(String name, ExecutorService exec, Mode mode, InputStream is, OutputStream os, OutputStream header, boolean restricted) throws IOException {
-        this(name,exec,mode,is,os,header,restricted,new Capability());
+    public Channel(String name, ExecutorService exec, Mode mode, InputStream is, OutputStream os, OutputStream header, boolean restricted, ClassLoader base) throws IOException {
+        this(name,exec,mode,is,os,header,restricted,base,new Capability());
     }
 
-    /*package*/ Channel(String name, ExecutorService exec, Mode mode, InputStream is, OutputStream os, OutputStream header, boolean restricted, Capability capability) throws IOException {
+    /*package*/ Channel(String name, ExecutorService exec, Mode mode, InputStream is, OutputStream os, OutputStream header, boolean restricted, ClassLoader base, Capability capability) throws IOException {
         this.name = name;
         this.executor = exec;
         this.isRestricted = restricted;
+
+        if (base==null)
+            base = getClass().getClassLoader();
 
         if(export(this,false)!=1)
             throw new AssertionError(); // export number 1 is reserved for the channel itself
@@ -395,7 +409,7 @@ public class Channel implements VirtualChannel, IChannel {
                                 this.oos = oos;
                                 this.remoteCapability = cap;
                                 this.pipeWriter = createPipeWriter();
-                                this.ois = new ObjectInputStream(mode.wrap(is));
+                                this.ois = new ObjectInputStreamEx(mode.wrap(is),base);
                                 new ReaderThread(name).start();
 
                                 return;
@@ -472,6 +486,7 @@ public class Channel implements VirtualChannel, IChannel {
             oos.flush();        // make sure the command reaches the other end.
         } finally {
             Channel.setCurrent(old);
+            commandsSent++;
         }
         // unless this is the last command, have OOS and remote OIS forget all the objects we sent
         // in this command. Otherwise it'll keep objects in memory unnecessarily.
@@ -513,9 +528,9 @@ public class Channel implements VirtualChannel, IChannel {
                 logger.log(Level.WARNING, "Unable to send GC command",e);
             }
 
-        // proxy will unexport this instance when it's GC-ed on the remote machine.
-        final int id = export(instance);
-        return RemoteInvocationHandler.wrap(null,id,type,userProxy,exportedObjects.isRecording());
+        // proxy will unexport this instance when it's GC-ed on the remote machine, so don't unexport on our side automatically at the end of a call.
+        final int id = export(instance,false);
+        return RemoteInvocationHandler.wrap(null, id, type, userProxy, exportedObjects.isRecording());
     }
 
     /*package*/ int export(Object instance) {
@@ -532,6 +547,22 @@ public class Channel implements VirtualChannel, IChannel {
 
     /*package*/ void unexport(int id) {
         exportedObjects.unexportByOid(id);
+    }
+
+    /**
+     * Increase reference count so much to effectively prevent de-allocation.
+     *
+     * @see ExportTable.Entry#pin()
+     */
+    public void pin(Object instance) {
+        exportedObjects.pin(instance);
+    }
+
+    /**
+     * {@linkplain #pin(Object) Pin down} the exported classloader.
+     */
+    public void pinClassLoader(ClassLoader cl) {
+        RemoteClassLoader.pin(cl,this);
     }
 
     /**
@@ -919,17 +950,22 @@ public class Channel implements VirtualChannel, IChannel {
         call(new IOSyncer());
     }
 
+    public void syncLocalIO() throws InterruptedException {
+        try {
+            pipeWriter.submit(new Runnable() {
+                public void run() {
+                    // noop
+                }
+            }).get();
+        } catch (ExecutionException e) {
+            throw new AssertionError(e); // impossible
+        }
+    }
+
     private static final class IOSyncer implements Callable<Object, InterruptedException> {
         public Object call() throws InterruptedException {
-            try {
-                return Channel.current().pipeWriter.submit(new Runnable() {
-                    public void run() {
-                        // noop
-                    }
-                }).get();
-            } catch (ExecutionException e) {
-                throw new AssertionError(e); // impossible
-            }
+            Channel.current().syncLocalIO();
+            return null;
         }
 
         private static final long serialVersionUID = 1L;
@@ -959,15 +995,18 @@ public class Channel implements VirtualChannel, IChannel {
     }
 
     private final class ReaderThread extends Thread {
+        private int commandsReceived = 0;
+        private int commandsExecuted = 0;
+
         public ReaderThread(String name) {
             super("Channel reader thread: "+name);
         }
 
         @Override
         public void run() {
-            Command cmd = null;
             try {
                 while(inClosed==null) {
+                    Command cmd = null;
                     try {
                         Channel old = Channel.setCurrent(Channel.this);
                         try {
@@ -982,7 +1021,10 @@ public class Channel implements VirtualChannel, IChannel {
                         throw ioe;
                     } catch (ClassNotFoundException e) {
                         logger.log(Level.SEVERE, "Unable to read a command (channel " + name + ")",e);
+                    } finally {
+                        commandsReceived++;
                     }
+
                     if(logger.isLoggable(Level.FINE))
                         logger.fine("Received "+cmd);
                     try {
@@ -990,6 +1032,8 @@ public class Channel implements VirtualChannel, IChannel {
                     } catch (Throwable t) {
                         logger.log(Level.SEVERE, "Failed to execute command "+cmd+ " (channel " + name + ")",t);
                         logger.log(Level.SEVERE, "This command is created here",cmd.createdAt);
+                    } finally {
+                        commandsExecuted++;
                     }
                 }
                 ois.close();

@@ -40,6 +40,7 @@ import hudson.Launcher;
 import hudson.Launcher.LocalLauncher;
 import hudson.LocalPluginManager;
 import hudson.Lookup;
+import hudson.Platform;
 import hudson.markup.MarkupFormatter;
 import hudson.Plugin;
 import hudson.PluginManager;
@@ -239,7 +240,7 @@ import java.util.regex.Pattern;
  * @author Kohsuke Kawaguchi
  */
 @ExportedBean
-public final class Hudson extends Node implements ItemGroup<TopLevelItem>, StaplerProxy, StaplerFallback, ViewGroup, AccessControlled, DescriptorByNameOwner {
+public class Hudson extends Node implements ItemGroup<TopLevelItem>, StaplerProxy, StaplerFallback, ViewGroup, AccessControlled, DescriptorByNameOwner {
     private transient final Queue queue;
 
     /**
@@ -637,7 +638,7 @@ public final class Hudson extends Node implements ItemGroup<TopLevelItem>, Stapl
             }
 
             // get or create the secret
-            TextFile secretFile = new TextFile(new File(Hudson.getInstance().getRootDir(),"secret.key"));
+            TextFile secretFile = new TextFile(new File(getRootDir(),"secret.key"));
             if(secretFile.exists()) {
                 secretKey = secretFile.readTrim();
             } else {
@@ -1310,6 +1311,15 @@ public final class Hudson extends Node implements ItemGroup<TopLevelItem>, Stapl
         }
 
         return r;
+    }
+
+    /**
+     * Gets all the items recursively.
+     *
+     * @since 1.402
+     */
+    public List<Item> getAllItems() {
+        return getAllItems(Item.class);
     }
 
     /**
@@ -2051,6 +2061,76 @@ public final class Hudson extends Node implements ItemGroup<TopLevelItem>, Stapl
         return item;
     }
 
+    /**
+     * Gets the item by its relative name from the given context
+     *
+     * <h2>Relative Names</h2>
+     * <p>
+     * If the name starts from '/', like "/foo/bar/zot", then it's interpreted as absolute.
+     * Otherwise, the name should be something like "../foo/bar" and it's interpreted like
+     * relative path name is, against the given context.
+     *
+     * @param context
+     *      null is interpreted as {@link Hudson}. Base 'directory' of the interpretation.
+     * @since 1.406
+     */
+    public Item getItem(String relativeName, ItemGroup context) {
+        if (context==null)  context = this;
+
+        if (relativeName.startsWith("/"))   // absolute
+            return getItemByFullName(relativeName);
+
+        Object/*Item|ItemGroup*/ ctx = context;
+
+        StringTokenizer tokens = new StringTokenizer(relativeName,"/");
+        while (tokens.hasMoreTokens()) {
+            String s = tokens.nextToken();
+            if (s.equals("..")) {
+                if (ctx instanceof Item) {
+                    ctx = ((Item)ctx).getParent();
+                    continue;
+                }
+
+                ctx=null;    // can't go up further
+                break;
+            }
+            if (s.equals(".")) {
+                continue;
+            }
+
+            if (ctx instanceof ItemGroup) {
+                ItemGroup g = (ItemGroup) ctx;
+                Item i = g.getItem(s);
+                if (i==null || !i.hasPermission(Item.READ)) {
+                    ctx=null;    // can't go up further
+                    break;
+                }
+                ctx=i;
+            }
+        }
+
+        if (ctx instanceof Item)
+            return (Item)ctx;
+
+        // fall back to the classic interpretation
+        return getItemByFullName(relativeName);
+    }
+
+    public final Item getItem(String relativeName, Item context) {
+        return getItem(relativeName,context!=null?context.getParent():null);
+    }
+
+    public final <T extends Item> T getItem(String relativeName, ItemGroup context, Class<T> type) {
+        Item r = getItem(relativeName, context);
+        if (type.isInstance(r))
+            return type.cast(r);
+        return null;
+    }
+
+    public final <T extends Item> T getItem(String relativeName, Item context, Class<T> type) {
+        return getItem(relativeName,context!=null?context.getParent():null,type);
+    }
+
     public File getRootDirFor(TopLevelItem child) {
         return getRootDirFor(child.getName());
     }
@@ -2085,6 +2165,9 @@ public final class Hudson extends Node implements ItemGroup<TopLevelItem>, Stapl
 
             if(!(item instanceof ItemGroup))
                 return null;    // this item can't have any children
+
+            if (!item.hasPermission(Item.READ))
+                return null;
 
             parent = (ItemGroup) item;
         }
@@ -2389,9 +2472,12 @@ public final class Hudson extends Node implements ItemGroup<TopLevelItem>, Stapl
     }
 
     public Object getDynamic(String token) {
-        for (Action a : getActions())
-            if(a.getUrlName().equals(token) || a.getUrlName().equals('/'+token))
+        for (Action a : getActions()) {
+            String url = a.getUrlName();
+            if (url==null)  continue;
+            if (url.equals(token) || url.equals('/' + token))
                 return a;
+        }
         for (Action a : getManagementLinks())
             if(a.getUrlName().equals(token))
                 return a;
@@ -2531,6 +2617,11 @@ public final class Hudson extends Node implements ItemGroup<TopLevelItem>, Stapl
         }
     }
 
+    /**
+     * Gets the {@link CrumbIssuer} currently in use.
+     *
+     * @return null if none is in use.
+     */
     public CrumbIssuer getCrumbIssuer() {
         return crumbIssuer;
     }
@@ -2871,7 +2962,7 @@ public final class Hudson extends Node implements ItemGroup<TopLevelItem>, Stapl
     public void doDoFingerprintCheck( StaplerRequest req, StaplerResponse rsp ) throws IOException, ServletException {
         // Parse the request
         MultipartFormDataParser p = new MultipartFormDataParser(req);
-        if(Hudson.getInstance().isUseCrumbs() && !Hudson.getInstance().getCrumbIssuer().validateCrumb(req, p)) {
+        if(isUseCrumbs() && !getCrumbIssuer().validateCrumb(req, p)) {
             rsp.sendError(HttpServletResponse.SC_FORBIDDEN,"No crumb found");
         }
         try {
@@ -2955,7 +3046,7 @@ public final class Hudson extends Node implements ItemGroup<TopLevelItem>, Stapl
      * Binds /userContent/... to $JENKINS_HOME/userContent.
      */
     public DirectoryBrowserSupport doUserContent() {
-        return new DirectoryBrowserSupport(this,getRootPath().child("userContent"),"User content","folder.gif",true);
+        return new DirectoryBrowserSupport(this,getRootPath().child("userContent"),"User content","folder.png",true);
     }
 
     /**
@@ -3397,9 +3488,12 @@ public final class Hudson extends Node implements ItemGroup<TopLevelItem>, Stapl
         return File.pathSeparatorChar==';';
     }
 
+    /**
+     * @deprecated
+     *      Use {@link Platform#isDarwin()}
+     */
     public static boolean isDarwin() {
-        // according to http://developer.apple.com/technotes/tn2002/tn2110.html
-        return System.getProperty("os.name").toLowerCase(Locale.ENGLISH).startsWith("mac");
+        return Platform.isDarwin();
     }
 
     /**
@@ -3447,6 +3541,7 @@ public final class Hudson extends Node implements ItemGroup<TopLevelItem>, Stapl
             if(rest.startsWith("/login")
             || rest.startsWith("/logout")
             || rest.startsWith("/accessDenied")
+            || rest.startsWith("/adjuncts/")
             || rest.startsWith("/signup")
             || rest.startsWith("/jnlpJars/")
             || rest.startsWith("/tcpSlaveAgentListener")
